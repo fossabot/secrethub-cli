@@ -2,17 +2,12 @@ package secrethub
 
 import (
 	"fmt"
-	"strings"
-	"text/template"
-
 	"github.com/secrethub/secrethub-cli/internals/cli"
 	"github.com/secrethub/secrethub-cli/internals/cli/ui"
-	"github.com/secrethub/secrethub-cli/internals/demo"
-
 	"github.com/secrethub/secrethub-go/internals/errio"
 	"github.com/secrethub/secrethub-go/pkg/secrethub"
-
-	"github.com/alecthomas/kingpin"
+	"github.com/spf13/cobra"
+	"strings"
 )
 
 const (
@@ -64,6 +59,7 @@ var (
 
 // App is the secrethub command-line application.
 type App struct {
+	root            *cobra.Command
 	credentialStore CredentialConfig
 	clientFactory   ClientFactory
 	cli             *cli.App
@@ -74,125 +70,37 @@ type App struct {
 // newClientFunc creates a ClientAdapater.
 type newClientFunc func() (secrethub.ClientInterface, error)
 
-// NewApp creates a new command-line application.
 func NewApp() *App {
 	io := ui.NewUserIO()
 	store := NewCredentialConfig(io)
-	help := "The SecretHub command-line interface is a unified tool to manage your infrastructure secrets with SecretHub.\n\n" +
-		"For a step-by-step introduction, check out:\n\n" +
-		"  https://secrethub.io/docs/getting-started/\n\n" +
-		"To get help, see:\n\n" +
-		"  https://secrethub.io/support/\n\n" +
-		"The CLI is configurable through command-line flags and environment variables. " +
-		"Options set on the command-line take precedence over those set in the environment. " +
-		"The format for environment variables is `SECRETHUB_[COMMAND_]FLAG_NAME`."
-
-	app := App{
-		cli: cli.NewApp(ApplicationName, help).ExtraEnvVarFunc(
-			func(key string) bool {
-				return strings.HasPrefix(key, "SECRETHUB_VAR_")
-			},
-		),
+	app := &App{
+		io:              io,
 		credentialStore: store,
 		clientFactory:   NewClientFactory(store),
-		io:              io,
-		logger:          cli.NewLogger(),
+	}
+	app.root = &cobra.Command{
+		Use:   ApplicationName,
+		Short: "The SecretHub command-line interface",
+		Long: "The SecretHub command-line interface is a unified tool to manage your infrastructure secrets with SecretHub.\n\n" +
+			"For a step-by-step introduction, check out:\n\n" +
+			"  https://secrethub.io/docs/getting-started/\n\n" +
+			"To get help, see:\n\n" +
+			"  https://secrethub.io/support/\n\n" +
+			"The CLI is configurable through command-line flags and environment variables. " +
+			"Options set on the command-line take precedence over those set in the environment. " +
+			"The format for environment variables is `SECRETHUB_[COMMAND_]FLAG_NAME`.",
 	}
 
-	RegisterDebugFlag(app.cli, app.logger)
-	RegisterMlockFlag(app.cli)
-	RegisterColorFlag(app.cli)
-	app.credentialStore.Register(app.cli)
-	app.clientFactory.Register(app.cli)
 	app.registerCommands()
 
-	app.cli.UsageTemplate(DefaultUsageTemplate)
-	app.cli.UsageFuncs(template.FuncMap{
-		"ManagementCommands": func(cmds []*kingpin.CmdModel) []*kingpin.CmdModel {
-			var res []*kingpin.CmdModel
-			for _, cmd := range cmds {
-				if len(cmd.Commands) > 0 {
-					res = append(res, cmd)
-				}
-			}
-			return res
-		},
-		"RootCommands": func(cmds []*kingpin.CmdModel) []*kingpin.CmdModel {
-			var res []*kingpin.CmdModel
-			for _, cmd := range cmds {
-				if len(cmd.Commands) == 0 {
-					res = append(res, cmd)
-				}
-			}
-			return res
-		},
-		"CommandsToTwoColumns": func(cmds []*kingpin.CmdModel) [][2]string {
-			var rows [][2]string
-			for _, cmd := range cmds {
-				if !cmd.Hidden {
-					rows = append(rows, [2]string{cmd.Name, cmd.Help})
-				}
-			}
-			return rows
-		},
-	})
-
-	return &app
-}
-
-// Version adds a flag for displaying the application version number.
-func (app *App) Version(version string, commit string) *App {
-	app.cli = app.cli.Version(ApplicationName + " version " + version + ", build " + commit)
 	return app
 }
 
-// Run builds the command-line application, parses the arguments,
-// configures global behavior and executes the command given by the args.
-func (app *App) Run(args []string) error {
-	// Parse also executes the command when parsing is successful.
-	_, err := app.cli.Parse(args)
+func (app *App) Run() error {
+	err := app.root.Execute()
 	return err
 }
 
-// Model returns the CLI application model containing all the SecretHub CLI commands, flags, and args.
-func (app *App) Model() *kingpin.ApplicationModel {
-	return app.cli.Model()
-}
-
-// registerCommands initializes all commands and registers them on the app.
 func (app *App) registerCommands() {
-
-	// Management commands
-	NewOrgCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewRepoCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewACLCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewServiceCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewAccountCommand(app.io, app.clientFactory.NewClient, app.credentialStore).Register(app.cli)
-	NewCredentialCommand(app.io, app.clientFactory, app.credentialStore).Register(app.cli)
-	NewConfigCommand(app.io, app.credentialStore).Register(app.cli)
-	NewEnvCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-
-	// Commands
-	NewInitCommand(app.io, app.clientFactory.NewUnauthenticatedClient, app.clientFactory.NewClientWithCredentials, app.credentialStore).Register(app.cli)
-	NewSignUpCommand(app.io, app.clientFactory.NewUnauthenticatedClient, app.credentialStore).Register(app.cli)
-	NewWriteCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewReadCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewGenerateSecretCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewLsCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewMkDirCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewRmCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewTreeCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewInspectCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewAuditCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewInjectCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewRunCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewPrintEnvCommand(app.cli, app.io).Register(app.cli)
-
-	// Hidden commands
-	NewClearCommand(app.io).Register(app.cli)
-	NewSetCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
-	NewClearClipboardCommand().Register(app.cli)
-	NewKeyringClearCommand().Register(app.cli)
-
-	demo.NewCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewReadCommand(app.io, app.clientFactory.NewClient).Register(app.root)
 }
