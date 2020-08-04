@@ -39,11 +39,12 @@ func NewReadCommand(io ui.IO, newClient newClientFunc) *ReadCommand {
 
 // Register initializes the command with the execution function and the flags.
 func (cmd *ReadCommand) Register(c *cobra.Command) {
-	var command = &cobra.Command{
-		Use:   "read",
-		Short: "Read a secret.",
-		Args:  cobra.ExactValidArgs(1),
-		RunE:  cmd.Run,
+	command := &cobra.Command{
+		Use:               "read",
+		Short:             "Read a secret.",
+		Args:              cobra.ExactValidArgs(1),
+		ValidArgsFunction: AutoCompleter{client: GetClient()}.SecretSuggestions,
+		RunE:              cmd.Run,
 	}
 
 	command.Flags().BoolVarP(&cmd.useClipboard, "clip", "c", false, fmt.Sprintf(
@@ -57,7 +58,7 @@ func (cmd *ReadCommand) Register(c *cobra.Command) {
 }
 
 // Run handles the command with the options as specified in the command.
-func (cmd *ReadCommand) Run(command *cobra.Command, args []string) error {
+func (cmd *ReadCommand) Run(_ *cobra.Command, args []string) error {
 	client, err := cmd.newClient()
 	if err != nil {
 		return err

@@ -1,0 +1,184 @@
+package secrethub
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"text/tabwriter"
+
+	"github.com/secrethub/secrethub-cli/internals/cli/ui"
+	"github.com/secrethub/secrethub-go/internals/api"
+	"github.com/secrethub/secrethub-go/internals/errio"
+	"github.com/spf13/cobra"
+)
+
+// LsCommand lists a repo, secret or namespace.
+type LsCommand struct {
+	path          api.Path
+	quiet         bool
+	useTimestamps bool
+	io            ui.IO
+	newClient     newClientFunc
+}
+
+// NewLsCommand creates a new LsCommand.
+func NewLsCommand(io ui.IO, newClient newClientFunc) *LsCommand {
+	return &LsCommand{
+		io:        io,
+		newClient: newClient,
+	}
+}
+
+func (cmd *LsCommand) Register(c *cobra.Command) {
+	command := &cobra.Command{
+		Use:     "ls",
+		Short:   "List contents of a path.",
+		Aliases: []string{"list"},
+		Args:    cobra.ExactValidArgs(1),
+		RunE:    cmd.Run,
+	}
+	command.Flags().BoolVarP(&cmd.quiet, "quiet", "q", false, "Only print paths.")
+	registerTimestampFlag(command, &cmd.useTimestamps)
+	c.AddCommand(command)
+}
+
+// Run lists a repo, secret or namespace.
+func (cmd *LsCommand) Run(c *cobra.Command, args []string) error {
+	timeFormatter := NewTimeFormatter(cmd.useTimestamps)
+
+	cmd.path = api.Path(args[0])
+	if cmd.path == "" {
+		repoLSCommand := NewRepoLSCommand(cmd.io, cmd.newClient)
+		repoLSCommand.quiet = cmd.quiet
+		repoLSCommand.useTimestamps = cmd.useTimestamps
+		return repoLSCommand.Run(c, args)
+	}
+
+	client, err := cmd.newClient()
+	if err != nil {
+		return err
+	}
+
+	// It must be a SecretPath as only SecretPaths has versions.
+	if cmd.path.HasVersion() {
+		secretPath, err := cmd.path.ToSecretPath()
+		if err != nil {
+			fmt.Println("no secret path!")
+			return err
+		}
+
+		version, err := client.Secrets().Versions().GetWithoutData(secretPath.Value())
+		if err != nil {
+			return err
+		}
+
+		err = printVersions(cmd.io.Output(), cmd.quiet, timeFormatter, version)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	// Try DirPath
+	dirPath, err := cmd.path.ToDirPath()
+	if err == nil {
+		dirFS, err := client.Dirs().GetTree(dirPath.Value(), 1, false)
+		if api.IsErrNotFound(err) && dirPath.IsRepoPath() {
+			return err
+		} else if err != nil && !api.IsErrNotFound(err) {
+			return err
+		} else if err == nil {
+			err = printDir(cmd.io.Output(), cmd.quiet, dirFS.RootDir, timeFormatter)
+			if err != nil {
+				return err
+			}
+			return nil
+		}
+	}
+
+	// Try SecretPath
+	secretPath, err := cmd.path.ToSecretPath()
+	if err == nil {
+		versions, err := client.Secrets().Versions().ListWithoutData(secretPath.Value())
+		if api.IsErrNotFound(err) {
+			return ErrResourceNotFound(cmd.path)
+		} else if err != nil {
+			return err
+		}
+
+		err = printVersions(cmd.io.Output(), cmd.quiet, timeFormatter, versions...)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	}
+
+	workspace, err := cmd.path.ToNamespace()
+	if err == nil {
+		cmd := RepoLSCommand{
+			workspace:     workspace,
+			useTimestamps: cmd.useTimestamps,
+			quiet:         cmd.quiet,
+			io:            cmd.io,
+			newClient:     cmd.newClient,
+		}
+
+		return cmd.Run(c, args)
+	}
+
+	// Path should always be a namespace, repository, directory, secret or secret version.
+	// Therefore, this should never happen.
+	return errio.UnexpectedError(errors.New("invalid path argument"))
+}
+
+// printVersions prints out secret versions in long or short format.
+func printVersions(w io.Writer, quiet bool, timeFormatter TimeFormatter, versions ...*api.SecretVersion) error {
+	if quiet {
+		for _, version := range versions {
+			fmt.Fprintf(w, "%s\n", version.Name())
+		}
+	} else {
+		w := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+		fmt.Fprintf(w, "%s\t%s\t%s\n", "NAME", "STATUS", "CREATED")
+		for _, version := range versions {
+			fmt.Fprintf(w, "%s\t%s\t%s\n", version.Name(), version.Status, timeFormatter.Format(version.CreatedAt.Local()))
+		}
+		err := w.Flush()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// printDir prints out directory contents in long or short format.
+func printDir(w io.Writer, quiet bool, dir *api.Dir, timeFormatter TimeFormatter) error {
+	sort.Sort(api.SortDirByName(dir.SubDirs))
+	sort.Sort(api.SortSecretByName(dir.Secrets))
+
+	if quiet {
+		for _, dir := range dir.SubDirs {
+			fmt.Fprintf(w, "%s/\n", dir.Name)
+		}
+		for _, secret := range dir.Secrets {
+			fmt.Fprintf(w, "%s\n", secret.Name)
+		}
+	} else {
+		tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", "NAME", "STATUS", "CREATED")
+		for _, dir := range dir.SubDirs {
+			fmt.Fprintf(tw, "%s/\t%s\t%s\n", dir.Name, dir.Status, timeFormatter.Format(dir.CreatedAt.Local()))
+		}
+		for _, secret := range dir.Secrets {
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", secret.Name, secret.Status, timeFormatter.Format(secret.CreatedAt.Local()))
+		}
+		err := tw.Flush()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}

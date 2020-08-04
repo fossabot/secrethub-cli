@@ -7,11 +7,10 @@ import (
 	"fmt"
 
 	"github.com/secrethub/secrethub-cli/internals/cli/ui"
-	"github.com/secrethub/secrethub-cli/internals/secrethub/command"
-
 	"github.com/secrethub/secrethub-go/internals/api"
 	"github.com/secrethub/secrethub-go/pkg/secrethub"
 	"github.com/secrethub/secrethub-go/pkg/secretpath"
+	"github.com/spf13/cobra"
 )
 
 type newClientFunc func() (secrethub.ClientInterface, error)
@@ -19,8 +18,7 @@ type newClientFunc func() (secrethub.ClientInterface, error)
 const defaultDemoRepo = "demo"
 
 type InitCommand struct {
-	repo api.RepoPath
-
+	repo      api.RepoPath
 	io        ui.IO
 	newClient newClientFunc
 }
@@ -33,17 +31,22 @@ func NewInitCommand(io ui.IO, newClient newClientFunc) *InitCommand {
 }
 
 // Register registers the command, arguments and flags on the provided Registerer.
-func (cmd *InitCommand) Register(r command.Registerer) {
-	clause := r.Command("init", "Create the secrets necessary to connect with the demo application.")
-	clause.HelpLong("demo init creates a repository with the username and password needed to connect to the demo API.")
-
-	clause.Flag("repo", "The path of the repository to create. Defaults to a "+defaultDemoRepo+" repo in your personal namespace.").SetValue(&cmd.repo)
-
-	command.BindAction(clause, cmd.Run)
+func (cmd *InitCommand) Register(c *cobra.Command) {
+	command := &cobra.Command{
+		Use:   "init",
+		Short: "Create the secrets necessary to connect with the demo application.",
+		Long:  "demo init creates a repository with the username and password needed to connect to the demo API.",
+		RunE:  cmd.Run,
+	}
+	c.Flags().String("repo", "+defaultDemoRepo+", "The path of the repository to create. Defaults to a \"+defaultDemoRepo+\" repo in your personal namespace.")
+	c.AddCommand(command)
 }
 
 // Run handles the command with the options as specified in the command.
-func (cmd *InitCommand) Run() error {
+func (cmd *InitCommand) Run(c *cobra.Command, args []string) error {
+	if c.Flags().Changed("repo") {
+		cmd.repo = api.RepoPath(c.Flag("repo").Value.String())
+	}
 	client, err := cmd.newClient()
 	if err != nil {
 		return err

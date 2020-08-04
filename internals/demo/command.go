@@ -1,10 +1,8 @@
 package demo
 
 import (
-	"github.com/secrethub/demo-app/cli"
-
 	"github.com/secrethub/secrethub-cli/internals/cli/ui"
-	"github.com/secrethub/secrethub-cli/internals/secrethub/command"
+	"github.com/spf13/cobra"
 )
 
 // Command is a command to run the secrethub example app.
@@ -22,10 +20,14 @@ func NewCommand(io ui.IO, newClient newClientFunc) *Command {
 }
 
 // Register registers the command, arguments and flags on the provided Registerer.
-func (cmd *Command) Register(r command.Registerer) {
-	clause := r.Command("demo", "Manage the demo application.")
-	clause.Hidden()
+func (cmd *Command) Register(c *cobra.Command) {
+	command := &cobra.Command{
+		Use:    "demo",
+		Short:  "Manage the demo application.",
+		Hidden: true,
+	}
 
-	NewInitCommand(cmd.io, cmd.newClient).Register(clause)
-	cli.NewServeCommand(cmd.io).Register(clause)
+	NewInitCommand(cmd.io, cmd.newClient).Register(command)
+	//cli.NewServeCommand(cmd.io).Register(command)
+	c.AddCommand(command)
 }

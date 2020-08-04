@@ -1,0 +1,177 @@
+package secrethub
+
+import (
+	"fmt"
+	"io/ioutil"
+	"os"
+	"path/filepath"
+	"time"
+
+	"github.com/docker/go-units"
+	"github.com/secrethub/secrethub-cli/internals/cli/clip"
+	"github.com/secrethub/secrethub-cli/internals/cli/filemode"
+	"github.com/secrethub/secrethub-cli/internals/cli/posix"
+	"github.com/secrethub/secrethub-cli/internals/cli/ui"
+	"github.com/secrethub/secrethub-cli/internals/secrethub/tpl"
+	"github.com/spf13/cobra"
+)
+
+// Errors
+var (
+	ErrUnknownTemplateVersion = errMain.Code("unknown_template_version").ErrorPref("unknown template version: '%s' supported versions are 1, 2 and latest")
+	ErrReadFile               = errMain.Code("in_file_read_error").ErrorPref("could not read the input file %s: %s")
+)
+
+// InjectCommand is a command to read a secret.
+type InjectCommand struct {
+	outFile                       string
+	inFile                        string
+	fileMode                      filemode.FileMode
+	force                         bool
+	io                            ui.IO
+	useClipboard                  bool
+	clearClipboardAfter           time.Duration
+	clipper                       clip.Clipper
+	osEnv                         []string
+	newClient                     newClientFunc
+	templateVars                  map[string]string
+	templateVersion               string
+	dontPromptMissingTemplateVars bool
+}
+
+// NewInjectCommand creates a new InjectCommand.
+func NewInjectCommand(io ui.IO, newClient newClientFunc) *InjectCommand {
+	return &InjectCommand{
+		clipper:             clip.NewClipboard(),
+		osEnv:               os.Environ(),
+		clearClipboardAfter: defaultClearClipboardAfter,
+		io:                  io,
+		newClient:           newClient,
+		templateVars:        make(map[string]string),
+	}
+}
+
+func (cmd *InjectCommand) Register(c *cobra.Command) {
+	command := &cobra.Command{
+		Use:   "inject",
+		Short: "Inject secrets into a template.",
+		RunE:  cmd.Run,
+	}
+
+	command.Flags().BoolVarP(&cmd.useClipboard, "clip", "c", false, fmt.Sprintf(
+		"Copy the injected template to the clipboard instead of stdout. The clipboard is automatically cleared after %s.",
+		units.HumanDuration(cmd.clearClipboardAfter)))
+	command.Flags().StringVar(&cmd.inFile, "in-file", "", "The filename of a template file to inject.")
+	command.Flags().StringVar(&cmd.outFile, "out-file", "", "Write the injected template to a file instead of stdout.")
+	command.Flags().StringVar(&cmd.outFile, "file", "", "")
+	_ = command.Flags().MarkHidden("file")
+	//command.Flags().StringVar(&cmd.fileMode, )
+	command.Flags().StringVar(&cmd.templateVersion, "template-version", "auto", "The template syntax version to be used. The options are v1, v2, latest or auto to automatically detect the version.")
+	command.Flags().BoolVar(&cmd.dontPromptMissingTemplateVars, "no-prompt", false, "Do not prompt when a template variable is missing and return an error instead.")
+	command.Flags().BoolVarP(&cmd.force, "force", "f", false, "Overwrite the output file if it already exists, without prompting for confirmation. This flag is ignored if no --out-file is supplied.")
+
+	c.AddCommand(command)
+}
+
+// Run handles the command with the options as specified in the command.
+func (cmd *InjectCommand) Run(_ *cobra.Command, _ []string) error {
+	if cmd.useClipboard && cmd.outFile != "" {
+		return ErrFlagsConflict("--clip and --file")
+	}
+
+	var err error
+	var raw []byte
+
+	if cmd.inFile != "" {
+		raw, err = ioutil.ReadFile(cmd.inFile)
+		if err != nil {
+			return ErrReadFile(cmd.inFile, err)
+		}
+	} else {
+		if !cmd.io.IsInputPiped() {
+			return ErrNoDataOnStdin
+		}
+
+		raw, err = ioutil.ReadAll(cmd.io.Input())
+		if err != nil {
+			return err
+		}
+	}
+
+	osEnv, _ := parseKeyValueStringsToMap(cmd.osEnv)
+
+	var templateVariableReader tpl.VariableReader
+	templateVariableReader, err = newVariableReader(osEnv, cmd.templateVars)
+	if err != nil {
+		return err
+	}
+
+	if !cmd.dontPromptMissingTemplateVars {
+		templateVariableReader = newPromptMissingVariableReader(templateVariableReader, cmd.io)
+	}
+
+	parser, err := getTemplateParser(raw, cmd.templateVersion)
+	if err != nil {
+		return err
+	}
+
+	template, err := parser.Parse(string(raw), 1, 1)
+	if err != nil {
+		return err
+	}
+
+	injected, err := template.Evaluate(templateVariableReader, newSecretReader(cmd.newClient))
+	if err != nil {
+		return err
+	}
+
+	out := []byte(injected)
+	if cmd.useClipboard {
+		err = WriteClipboardAutoClear(out, cmd.clearClipboardAfter, cmd.clipper)
+		if err != nil {
+			return err
+		}
+
+		fmt.Fprintln(cmd.io.Output(), fmt.Sprintf("Copied injected template to clipboard. It will be cleared after %s.", units.HumanDuration(cmd.clearClipboardAfter)))
+	} else if cmd.outFile != "" {
+		_, err := os.Stat(cmd.outFile)
+		if err == nil && !cmd.force {
+			if cmd.io.IsOutputPiped() {
+				return ErrFileAlreadyExists
+			}
+
+			confirmed, err := ui.AskYesNo(
+				cmd.io,
+				fmt.Sprintf(
+					"File %s already exists, overwrite it?",
+					cmd.outFile,
+				),
+				ui.DefaultNo,
+			)
+			if err != nil {
+				return err
+			}
+
+			if !confirmed {
+				fmt.Fprintln(cmd.io.Output(), "Aborting.")
+				return nil
+			}
+		}
+
+		err = ioutil.WriteFile(cmd.outFile, posix.AddNewLine(out), cmd.fileMode.FileMode())
+		if err != nil {
+			return ErrCannotWrite(cmd.outFile, err)
+		}
+
+		absPath, err := filepath.Abs(cmd.outFile)
+		if err != nil {
+			return ErrCannotWrite(err)
+		}
+
+		fmt.Fprintf(cmd.io.Output(), "%s\n", absPath)
+	} else {
+		fmt.Fprintf(cmd.io.Output(), "%s", posix.AddNewLine(out))
+	}
+
+	return nil
+}

@@ -2,12 +2,12 @@ package secrethub
 
 import (
 	"fmt"
-	"github.com/secrethub/secrethub-cli/internals/cli"
+	"strings"
+
 	"github.com/secrethub/secrethub-cli/internals/cli/ui"
 	"github.com/secrethub/secrethub-go/internals/errio"
 	"github.com/secrethub/secrethub-go/pkg/secrethub"
 	"github.com/spf13/cobra"
-	"strings"
 )
 
 const (
@@ -59,12 +59,11 @@ var (
 
 // App is the secrethub command-line application.
 type App struct {
-	root            *cobra.Command
+	cli             *cobra.Command
 	credentialStore CredentialConfig
 	clientFactory   ClientFactory
-	cli             *cli.App
 	io              ui.IO
-	logger          cli.Logger
+	//logger          cli.Logger
 }
 
 // newClientFunc creates a ClientAdapater.
@@ -78,7 +77,7 @@ func NewApp() *App {
 		credentialStore: store,
 		clientFactory:   NewClientFactory(store),
 	}
-	app.root = &cobra.Command{
+	app.cli = &cobra.Command{
 		Use:   ApplicationName,
 		Short: "The SecretHub command-line interface",
 		Long: "The SecretHub command-line interface is a unified tool to manage your infrastructure secrets with SecretHub.\n\n" +
@@ -89,6 +88,8 @@ func NewApp() *App {
 			"The CLI is configurable through command-line flags and environment variables. " +
 			"Options set on the command-line take precedence over those set in the environment. " +
 			"The format for environment variables is `SECRETHUB_[COMMAND_]FLAG_NAME`.",
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 
 	app.registerCommands()
@@ -97,10 +98,44 @@ func NewApp() *App {
 }
 
 func (app *App) Run() error {
-	err := app.root.Execute()
+	err := app.cli.Execute()
 	return err
 }
 
 func (app *App) registerCommands() {
-	NewReadCommand(app.io, app.clientFactory.NewClient).Register(app.root)
+	app.cli.AddCommand(newCompletionCommand())
+
+	// Management commands
+	//NewOrgCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewRepoCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewACLCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewServiceCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewAccountCommand(app.io, app.clientFactory.NewClient, app.credentialStore).Register(app.cli)
+	//NewCredentialCommand(app.io, app.clientFactory, app.credentialStore).Register(app.cli)
+	//NewConfigCommand(app.io, app.credentialStore).Register(app.cli)
+	//NewEnvCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+
+	// Commands
+	//NewInitCommand(app.io, app.clientFactory.NewUnauthenticatedClient, app.clientFactory.NewClientWithCredentials, app.credentialStore).Register(app.cli)
+	NewSignUpCommand(app.io, app.clientFactory.NewUnauthenticatedClient, app.credentialStore).Register(app.cli)
+	NewWriteCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewReadCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewGenerateSecretCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewLsCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewMkDirCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewRmCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewTreeCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewInspectCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewAuditCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewInjectCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewRunCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	//NewPrintEnvCommand(app.cli, app.io).Register(app.cli)
+
+	// Hidden commands
+	//NewClearCommand(app.io).Register(app.cli)
+	NewSetCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
+	NewClearClipboardCommand().Register(app.cli)
+	//NewKeyringClearCommand().Register(app.cli)
+
+	//demo.NewCommand(app.io, app.clientFactory.NewClient).Register(app.cli)
 }

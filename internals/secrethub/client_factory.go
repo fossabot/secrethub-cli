@@ -1,12 +1,14 @@
 package secrethub
 
 import (
-	"github.com/secrethub/secrethub-go/pkg/secrethub"
-	"github.com/secrethub/secrethub-go/pkg/secrethub/configdir"
-	"github.com/secrethub/secrethub-go/pkg/secrethub/credentials"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"github.com/secrethub/secrethub-go/pkg/secrethub"
+	"github.com/secrethub/secrethub-go/pkg/secrethub/configdir"
+	"github.com/secrethub/secrethub-go/pkg/secrethub/credentials"
+	"github.com/spf13/cobra"
 )
 
 // Errors
@@ -18,6 +20,8 @@ var (
 type ClientFactory interface {
 	// NewClient returns a new SecretHub client.
 	NewClient() (secrethub.ClientInterface, error)
+	NewClientWithCredentials(credentials.Provider) (secrethub.ClientInterface, error)
+	NewUnauthenticatedClient() (secrethub.ClientInterface, error)
 }
 
 // NewClientFactory creates a new ClientFactory.
@@ -36,11 +40,16 @@ type clientFactory struct {
 	store            CredentialConfig
 }
 
+func (f *clientFactory) Register(c *cobra.Command) {
+	// TODO missing api-remote and proxy-address
+	c.Flags().StringVar(&f.identityProvider, "identity-provider", "key", "Enable native authentication with a trusted identity provider. Options are `aws` (IAM + KMS), `gcp` (IAM + KMS) and `key`. When you run the CLI on one of the platforms, you can leverage their respective identity providers to do native keyless authentication. Defaults to key, which uses the default credential sourced from a file, command-line flag, or environment variable.")
+}
+
 // NewClient returns a new client that is configured to use the remote that
 // is set with the flag.
 func (f *clientFactory) NewClient() (secrethub.ClientInterface, error) {
 	if f.client == nil {
-		credentialProvider := f.store.Provider()
+		var credentialProvider credentials.Provider
 		switch strings.ToLower(f.identityProvider) {
 		case "aws":
 			credentialProvider = credentials.UseAWS()
@@ -88,4 +97,27 @@ func (f *clientFactory) baseClientOptions() []secrethub.ClientOption {
 	}
 
 	return options
+}
+
+func (f *clientFactory) NewClientWithCredentials(provider credentials.Provider) (secrethub.ClientInterface, error) {
+	options := f.baseClientOptions()
+	options = append(options, secrethub.WithCredentials(provider))
+
+	client, err := secrethub.NewClient(options...)
+	if err != nil {
+		return nil, err
+	}
+
+	return client, nil
+}
+
+func (f *clientFactory) NewUnauthenticatedClient() (secrethub.ClientInterface, error) {
+	options := f.baseClientOptions()
+
+	client, err := secrethub.NewClient(options...)
+	if err != nil {
+		return nil, err
+	}
+
+	return client, nil
 }

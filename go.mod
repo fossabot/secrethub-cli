@@ -12,6 +12,7 @@ require (
 	github.com/masterzen/winrm v0.0.0-20190308153735-1d17eaf15943
 	github.com/mattn/go-colorable v0.1.1
 	github.com/mattn/go-isatty v0.0.7
+	github.com/mitchellh/go-homedir v1.1.0
 	github.com/op/go-logging v0.0.0-20160315200505-970db520ece7
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/secrethub/demo-app v0.1.0
